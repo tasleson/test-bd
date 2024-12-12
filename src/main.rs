@@ -278,7 +278,7 @@ enum Commands {
         #[arg(long, default_value = "0")]
         id: i32,
 
-        /// Size of block device in MiB
+        /// Size of block device
         #[arg(short, long, default_value = "1 GiB")]
         size: Option<String>,
 
@@ -295,7 +295,7 @@ enum Commands {
         random: Option<u32>,
 
         /// Seed, 0 == pick one at random
-        #[arg(short, long, default_value = "0")]
+        #[arg(long, default_value = "0")]
         seed: Option<u64>,
 
         /// Number of segment ranges the block device is broken up into (fill, dup., rand.)
