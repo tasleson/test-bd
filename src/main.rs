@@ -3,42 +3,32 @@
 ///
 /// Based on the libublk-rs example ramdisk target.
 ///
+///
+///
+///
+use clap::{Parser, Subcommand};
+
+use data_pattern::PercentPattern;
 use libublk::ctrl::UblkCtrl;
 use libublk::helpers::IoBuf;
 use libublk::io::{UblkDev, UblkQueue};
 use libublk::uring_async::ublk_run_ctrl_task;
 use libublk::{UblkError, UblkFlags};
-use rand::{RngCore, SeedableRng};
-use rand_pcg::Mcg128Xsl64;
 use std::fs::File;
 use std::io::{Error, ErrorKind};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-struct RandWrap {
-    r: Mcg128Xsl64,
-    s: u64,
-}
+use parse_size::parse_size;
 
-impl RandWrap {
-    fn new(seed: u64) -> Self {
-        Self {
-            r: Mcg128Xsl64::seed_from_u64(seed),
-            s: seed,
-        }
-    }
+mod data_pattern;
 
-    fn set_state_to(&mut self, offset: u64) {
-        self.r = Mcg128Xsl64::seed_from_u64(self.s);
-        self.r.advance(offset as u128);
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        self.r.next_u64()
-    }
-}
-
-fn handle_io(q: &UblkQueue, tag: u16, buf_addr: *mut u8, state: &mut TestBdState) -> i32 {
+fn handle_io(
+    q: &UblkQueue,
+    tag: u16,
+    buf_addr: *mut u8,
+    state: &mut data_pattern::TestBdState,
+) -> i32 {
     let iod = q.get_iod(tag);
     let off = iod.start_sector << 9;
     let bytes = (iod.nr_sectors << 9) as i32;
@@ -72,7 +62,7 @@ fn handle_io(q: &UblkQueue, tag: u16, buf_addr: *mut u8, state: &mut TestBdState
     bytes
 }
 
-async fn io_task(q: &UblkQueue<'_>, tag: u16, state: &mut TestBdState) {
+async fn io_task(q: &UblkQueue<'_>, tag: u16, state: &mut data_pattern::TestBdState) {
     let buf_size = q.dev.dev_info.max_io_buf_bytes as usize;
     let buffer = IoBuf::<u8>::new(buf_size);
     let addr = buffer.as_mut_ptr();
@@ -136,7 +126,13 @@ fn read_dev_id(efd: i32) -> Result<i32, Error> {
 
 ///run this ublk daemon completely in single context with
 ///async control command, Rust async no longer needed
-fn rd_add_dev(dev_id: i32, size: u64, for_add: bool, efd: i32, state: &mut TestBdState) {
+fn rd_add_dev(
+    dev_id: i32,
+    size: u64,
+    for_add: bool,
+    efd: i32,
+    state: &mut data_pattern::TestBdState,
+) {
     let dev_flags = if for_add {
         UblkFlags::UBLK_DEV_F_ADD_DEV
     } else {
@@ -196,54 +192,15 @@ fn rd_get_device_size(ctrl: &UblkCtrl) -> u64 {
     }
 }
 
-// Expectation is we set the offset and walk the number of blocks 8 bytes at a time
-pub trait PatternGenerator {
-    fn setup(&mut self, offset: u64);
-    fn next_u64(&mut self) -> u64;
-}
-
-// Eventually we want an interface and different data types that implement that interface that
-// each have unique behavior we are looking for.
-struct TestBdState {
-    s: Rc<Mutex<Box<dyn PatternGenerator>>>,
-}
-
-impl std::clone::Clone for TestBdState {
-    fn clone(&self) -> Self {
-        Self { s: self.s.clone() }
-    }
-}
-
-struct AllRandom {
-    r: RandWrap,
-}
-
-impl PatternGenerator for AllRandom {
-    fn setup(&mut self, offset: u64) {
-        self.r.set_state_to(offset);
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        self.r.next_u64()
-    }
-}
-
-impl AllRandom {
-    fn create(seed: u128) -> Box<dyn PatternGenerator> {
-        Box::new(Self {
-            r: RandWrap::new(seed as u64),
-        })
-    }
-}
-
-fn test_add(recover: usize) {
-    let dev_id: i32 = std::env::args()
-        .nth(2)
-        .unwrap_or_else(|| "-1".to_string())
-        .parse::<i32>()
-        .unwrap();
-    let s = std::env::args().nth(3).unwrap_or_else(|| "32".to_string());
-    let mb = s.parse::<u64>().unwrap();
+fn test_add(
+    dev_id: i32,
+    size: u64,
+    seed: u64,
+    recover: i32,
+    percents: &PercentPattern,
+    segments: usize,
+) -> u64 {
+    let mut actual_seed = seed;
     let efd = nix::sys::eventfd::eventfd(0, nix::sys::eventfd::EfdFlags::empty()).unwrap();
 
     let stdout = File::create("/tmp/test-bd.debug").unwrap();
@@ -252,7 +209,7 @@ fn test_add(recover: usize) {
     let daemonize = daemonize::Daemonize::new().stdout(stdout).stderr(stderr);
     match daemonize.execute() {
         daemonize::Outcome::Child(Ok(_)) => {
-            let mut size = mb << 20;
+            let mut size = size;
 
             if recover > 0 {
                 assert!(dev_id >= 0);
@@ -262,8 +219,12 @@ fn test_add(recover: usize) {
                 ctrl.start_user_recover().unwrap();
             }
 
-            let m = Mutex::new(AllRandom::create(4534168388935060362));
-            let mut state = TestBdState { s: Rc::new(m) };
+            let m = Mutex::new(data_pattern::DataMix::create(
+                size, seed, segments, percents,
+            ));
+
+            actual_seed = m.lock().unwrap().seed();
+            let mut state = data_pattern::TestBdState { s: Rc::new(m) };
             rd_add_dev(dev_id, size, recover == 0, efd, &mut state);
         }
         daemonize::Outcome::Parent(Ok(_)) => match read_dev_id(efd) {
@@ -272,28 +233,142 @@ fn test_add(recover: usize) {
         },
         _ => panic!(),
     }
+    actual_seed
 }
 
-fn test_del(async_del: bool) {
-    let s = std::env::args().nth(2).unwrap_or_else(|| "0".to_string());
-    let dev_id = s.parse::<i32>().unwrap();
-    let ctrl = UblkCtrl::new_simple(dev_id).unwrap();
+fn test_del(dev_id: i32, async_del: bool) {
+    let ctrl = UblkCtrl::new_simple(dev_id);
 
-    if !async_del {
-        ctrl.del_dev().expect("fail to del_dev_async");
-    } else {
-        ctrl.del_dev_async().expect("fail to del_dev_async");
+    match ctrl {
+        Ok(ctrl) => {
+            if !async_del {
+                if let Err(e) = ctrl.del_dev() {
+                    eprintln!(
+                        "Failed to remove test block device {} {:?} (sync.)",
+                        dev_id, e
+                    );
+                }
+            } else if let Err(e) = ctrl.del_dev_async() {
+                eprintln!(
+                    "Failed to remove test block device {} {:?} (async.)",
+                    dev_id, e
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!("{:?}", e);
+        }
     }
 }
 
+#[derive(Parser)]
+#[command(
+    version,
+    about,
+    long_about = "Read only [RO] test block device with procedurally generated data"
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Adds a block device
+    Add {
+        /// ID to use for new block device
+        #[arg(long, default_value = "0")]
+        id: i32,
+
+        /// Size of block device in MiB
+        #[arg(short, long, default_value = "1 GiB")]
+        size: Option<String>,
+
+        /// Percent fill data
+        #[arg(short, long, default_value = "25")]
+        fill: Option<u32>,
+
+        /// Percent duplicate data
+        #[arg(short, long, default_value = "50")]
+        duplicate: Option<u32>,
+
+        /// Percent random data
+        #[arg(short, long, default_value = "25")]
+        random: Option<u32>,
+
+        /// Seed, 0 == pick one at random
+        #[arg(short, long, default_value = "0")]
+        seed: Option<u64>,
+
+        /// Number of segment ranges the block device is broken up into (fill, dup., rand.)
+        #[arg(long, default_value = "100")]
+        segments: Option<usize>,
+    },
+
+    /// Deletes a block device
+    Del {
+        /// ID of block device to remove
+        #[arg(long, default_value = "0")]
+        id: i32,
+
+        #[arg(long, default_value = "false")]
+        del_async: Option<bool>,
+    },
+}
+
 fn main() {
-    if let Some(cmd) = std::env::args().nth(1) {
-        match cmd.as_str() {
-            "add" => test_add(0),
-            "recover" => test_add(1),
-            "del" => test_del(false),
-            "del_async" => test_del(true),
-            _ => todo!(),
+    let cli = Cli::parse();
+
+    match &cli.command {
+        Commands::Add {
+            id,
+            size,
+            fill,
+            duplicate,
+            random,
+            seed,
+            segments,
+        } => {
+            let fill = fill.unwrap();
+            let dup = duplicate.unwrap();
+            let rand = random.unwrap();
+            let seed = seed.unwrap();
+
+            if fill + dup + rand != 100 {
+                eprintln!(
+                    "The [fill|duplicate|random] options must total, current = [{},{},{}] = 100",
+                    fill, dup, rand
+                );
+                std::process::exit(2);
+            }
+
+            let percents = PercentPattern {
+                fill,
+                duplicates: dup,
+                random: rand,
+            };
+
+            let size_bytes = parse_size(size.clone().unwrap());
+            let size = match size_bytes {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Error in size argument {:?}", e);
+                    std::process::exit(2);
+                }
+            };
+
+            let nseg = segments.unwrap();
+            if nseg as u64 >= size / 512 {
+                eprintln!(
+                    "Number of segments must be less than device size / 512 {} {}",
+                    nseg,
+                    size / 512
+                );
+                std::process::exit(2);
+            }
+
+            println!("seed = {}", test_add(*id, size, seed, 0, &percents, nseg));
         }
+        Commands::Del { id, del_async } => test_del(*id, del_async.unwrap()),
     }
 }

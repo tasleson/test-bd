@@ -14,3 +14,5 @@ futures = "0.3"
 nix = "0.26.2"
 rand = "0.8"
 rand_pcg = "0.3"
+clap = { version = "4", features = ["env", "derive"] }
+parse-size = "1.1"
