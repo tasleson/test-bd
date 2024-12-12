@@ -3,7 +3,46 @@
 
 When testing things like `blk-archive` it's useful to create block devices that can procedurally create interesting
 data patterns to verify the tool is working as expected.  This also allows us to create very large test block device
-(e.g. 16 EiB) which we may not have access too.
+(e.g. 16 EiB) which may not exist.
+
+###
+
+```
+$ test-bd --help
+Read only [RO] test block device with procedurally generated data
+
+Usage: test-bd <COMMAND>
+
+Commands:
+  add   Adds a block device
+  del   Deletes a block device
+  help  Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+```
+
+```
+$ test-bd add --help
+Adds a block device
+
+Usage: test-bd add [OPTIONS]
+
+Options:
+      --id <ID>                ID to use for new block device [default: 0]
+  -s, --size <SIZE>            Size of block device in MiB [default: "1 GiB"]
+  -f, --fill <FILL>            Percent fill data [default: 25]
+  -d, --duplicate <DUPLICATE>  Percent duplicate data [default: 50]
+  -r, --random <RANDOM>        Percent random data [default: 25]
+      --seed <SEED>            Seed, 0 == pick one at random [default: 0]
+      --segments <SEGMENTS>    Number of segment ranges the block device is broken up into (fill, dup., rand.) [default: 100]
+  -h, --help                   Print help
+
+```
 
 ### Examples
 ```bash
