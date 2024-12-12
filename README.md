@@ -27,14 +27,13 @@ Options:
 ```
 
 ```
-$ test-bd add --help
 Adds a block device
 
 Usage: test-bd add [OPTIONS]
 
 Options:
       --id <ID>                ID to use for new block device [default: 0]
-  -s, --size <SIZE>            Size of block device in MiB [default: "1 GiB"]
+  -s, --size <SIZE>            Size of block device, common suffixes supported ([B|M|MiB|MB|G|GiB|GB ...]) [default: "1 GiB"]
   -f, --fill <FILL>            Percent fill data [default: 25]
   -d, --duplicate <DUPLICATE>  Percent duplicate data [default: 50]
   -r, --random <RANDOM>        Percent random data [default: 25]

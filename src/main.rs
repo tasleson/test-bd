@@ -278,7 +278,7 @@ enum Commands {
         #[arg(long, default_value = "0")]
         id: i32,
 
-        /// Size of block device
+        /// Size of block device, common suffixes supported ([B|M|MiB|MB|G|GiB|GB ...])
         #[arg(short, long, default_value = "1 GiB")]
         size: Option<String>,
 
