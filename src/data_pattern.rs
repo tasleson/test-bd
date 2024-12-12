@@ -2,6 +2,7 @@ use rand::prelude::SliceRandom;
 use rand::Rng;
 use rand::{RngCore, SeedableRng};
 use rand_pcg::Mcg128Xsl64;
+use size_display::Size;
 use std::collections::BTreeSet;
 use std::rc::Rc;
 use std::sync::Mutex;
@@ -213,7 +214,7 @@ fn split_range_into_random_subranges_with_buckets(
     result.sort_by_key(|(range, _)| range.start);
 
     for r in &result {
-        println!("{:?} - {:?}", r.0, r.1);
+        println!("{:?} - {:?} ({:.1})", r.0, r.1, Size(r.0.end - r.0.start));
     }
 
     result
