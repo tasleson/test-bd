@@ -33,7 +33,6 @@ impl RandWrap {
 pub trait PatternGenerator {
     fn setup(&mut self, offset: u64);
     fn next_u64(&mut self) -> u64;
-    fn seed(&self) -> u64;
 }
 
 // Eventually we want an interface and different data types that implement that interface that
@@ -56,7 +55,6 @@ pub struct PercentPattern {
 
 pub struct DataMix {
     mapping: Vec<(std::ops::Range<u64>, Bucket)>,
-    seed: u64,
     r: RandWrap,
     offset: u64,
     range_end: u64,
@@ -71,13 +69,6 @@ impl DataMix {
         segments: usize,
         percents: &PercentPattern,
     ) -> Box<dyn PatternGenerator> {
-        let seed = if seed == 0 {
-            let mut rng = rand::thread_rng();
-            rng.gen_range(1..u64::MAX)
-        } else {
-            seed
-        };
-
         let mapping = split_range_into_random_subranges_with_buckets(
             seed,
             size,
@@ -92,7 +83,6 @@ impl DataMix {
 
         Box::new(Self {
             mapping,
-            seed,
             r: RandWrap::new(seed),
             offset: 0,
             range_end: 0,
@@ -149,9 +139,6 @@ impl PatternGenerator for DataMix {
 
         self.offset += 1;
         v
-    }
-    fn seed(&self) -> u64 {
-        self.seed
     }
 }
 

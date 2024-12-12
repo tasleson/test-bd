@@ -20,6 +20,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use parse_size::parse_size;
+use rand::Rng;
 
 mod data_pattern;
 
@@ -199,8 +200,7 @@ fn test_add(
     recover: i32,
     percents: &PercentPattern,
     segments: usize,
-) -> u64 {
-    let mut actual_seed = seed;
+) {
     let efd = nix::sys::eventfd::eventfd(0, nix::sys::eventfd::EfdFlags::empty()).unwrap();
 
     let stdout = File::create("/tmp/test-bd.debug").unwrap();
@@ -223,7 +223,6 @@ fn test_add(
                 size, seed, segments, percents,
             ));
 
-            actual_seed = m.lock().unwrap().seed();
             let mut state = data_pattern::TestBdState { s: Rc::new(m) };
             rd_add_dev(dev_id, size, recover == 0, efd, &mut state);
         }
@@ -233,7 +232,6 @@ fn test_add(
         },
         _ => panic!(),
     }
-    actual_seed
 }
 
 fn test_del(dev_id: i32, async_del: bool) {
@@ -367,7 +365,16 @@ fn main() {
                 std::process::exit(2);
             }
 
-            println!("seed = {}", test_add(*id, size, seed, 0, &percents, nseg));
+            let seed = if seed == 0 {
+                let mut rng = rand::thread_rng();
+                rng.gen_range(1..u64::MAX)
+            } else {
+                seed
+            };
+
+            println!("seed = {}", seed);
+
+            test_add(*id, size, seed, 0, &percents, nseg);
         }
         Commands::Del { id, del_async } => test_del(*id, del_async.unwrap()),
     }
