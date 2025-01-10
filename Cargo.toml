@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 num = "0.4.3"
-libublk = { path = "../libublk-rs/" }
+libublk = "0.3"
 libc = "0.2"
 smol = "2"
 daemonize = "0.5"
