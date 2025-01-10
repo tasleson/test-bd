@@ -46,7 +46,7 @@ fn handle_io(
             io_gen.setup(off);
 
             for _ in 0..full_writes {
-                let v = io_gen.next_u64();
+                let v = io_gen.next_u64().to_be();
                 *p = v;
                 p = p.wrapping_add(1);
             }
