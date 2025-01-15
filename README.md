@@ -3,7 +3,7 @@
 
 When testing things like `blk-archive` it's useful to create block devices that can procedurally create interesting
 data patterns to verify the tool is working as expected.  This also allows us to create very large test block device
-(e.g. 16 EiB) which may not exist.
+(e.g. 8191PiB) which may not exist.
 
 ###
 

@@ -348,7 +348,13 @@ fn main() {
 
             let size_bytes = parse_size(size.clone().unwrap());
             let size = match size_bytes {
-                Ok(s) => s,
+                Ok(s) => {
+                    if s > i64::MAX as u64 {
+                        eprintln!("Error: Max size is {}", i64::MAX);
+                        std::process::exit(2);
+                    }
+                    s
+                }
                 Err(e) => {
                     eprintln!("Error in size argument {:?}", e);
                     std::process::exit(2);
