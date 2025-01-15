@@ -203,8 +203,8 @@ fn test_add(
 ) {
     let efd = nix::sys::eventfd::eventfd(0, nix::sys::eventfd::EfdFlags::empty()).unwrap();
 
-    let stdout = File::create("/tmp/test-bd.debug").unwrap();
-    let stderr = File::create("/tmp/test-bd.error").unwrap();
+    let stdout = File::create(format!("/tmp/test-bd_{}.debug", dev_id)).unwrap();
+    let stderr = File::create(format!("/tmp/test-bd_{}.error", dev_id)).unwrap();
 
     let daemonize = daemonize::Daemonize::new().stdout(stdout).stderr(stderr);
     match daemonize.execute() {
