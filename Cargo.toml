@@ -5,11 +5,15 @@ edition = "2021"
 
 [dependencies]
 num = "0.4.3"
-libublk = "0.3"
+#libublk = "0.4"
+libublk = { path = "../libublk-rs/"}
+
 libc = "0.2"
 smol = "2"
 daemonize = "0.5"
 env_logger = "0.11"
+log = "0.4"
+io-uring = "0.7"
 futures = "0.3"
 nix = "0.26.2"
 rand = "0.8"
