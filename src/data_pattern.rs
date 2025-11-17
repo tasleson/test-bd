@@ -175,14 +175,45 @@ impl PatternGenerator for DataMix {
 
 use serde::{Deserialize, Serialize};
 
+/// Represents the type of data pattern used in a block device segment.
+///
+/// Each segment of the test block device can use a different pattern type,
+/// allowing for testing of various data scenarios including compression,
+/// deduplication, and encryption effectiveness.
+///
+/// # Examples
+///
+/// ```
+/// use test_bd::Bucket;
+///
+/// let pattern = Bucket::Fill;
+/// assert_eq!(pattern, Bucket::Fill);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Bucket {
+    /// All data is filled with zeros (or a constant pattern).
+    ///
+    /// This pattern is useful for testing compression efficiency, as it
+    /// produces highly compressible data.
     Fill,
 
+    /// Data follows a repeating pattern of 64 sequential values (0, 1, 2, ..., 63).
+    ///
+    /// This pattern is ideal for testing deduplication effectiveness, as the
+    /// same 512-byte blocks (64 * 8 bytes) repeat throughout the segment.
     Duplicate,
 
+    /// Data is generated using a deterministic pseudo-random number generator.
+    ///
+    /// This pattern produces data that appears random but is reproducible using
+    /// the same seed. It's useful for testing scenarios where data should not
+    /// compress or deduplicate well, such as encrypted or already-compressed data.
     Random,
 
+    /// Internal sentinel value indicating an uninitialized or invalid bucket.
+    ///
+    /// This variant should not appear in normal usage and indicates a programming error
+    /// if encountered during runtime.
     NotValid,
 }
 

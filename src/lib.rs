@@ -1,3 +1,122 @@
+//! A library for creating procedurally generated test block devices using ublk.
+//!
+//! `test-bd` provides a simple API for creating userspace block devices with
+//! deterministic, procedurally generated data patterns. This is useful for testing
+//! storage systems, compression algorithms, deduplication systems, and other
+//! block-level operations.
+//!
+//! # Features
+//!
+//! - **Procedural Data Generation**: Create block devices with deterministic data patterns
+//!   using a seed-based random number generator
+//! - **Multiple Pattern Types**: Support for fill (zeros), duplicate (repeating blocks),
+//!   and random data patterns
+//! - **Configurable Segmentation**: Divide devices into multiple segments with different
+//!   data patterns
+//! - **Device Management**: High-level API for managing multiple devices with automatic
+//!   cleanup
+//!
+//! # Quick Start
+//!
+//! The easiest way to create and manage test block devices is using [`DeviceManager`]:
+//!
+//! ```no_run
+//! use test_bd::{DeviceManager, TestBlockDeviceConfig};
+//!
+//! // Create a device manager
+//! let mut manager = DeviceManager::new();
+//!
+//! // Configure a 1 GiB device with mixed data patterns
+//! let config = TestBlockDeviceConfig {
+//!     dev_id: -1,              // Auto-assign device ID
+//!     size: 1024 * 1024 * 1024, // 1 GiB
+//!     seed: 42,                // Seed for reproducibility
+//!     fill_percent: 40,        // 40% zeros (compressible)
+//!     duplicate_percent: 30,   // 30% duplicate blocks (deduplicatable)
+//!     random_percent: 30,      // 30% random data
+//!     segments: 100,           // 100 segments
+//!     unprivileged: false,
+//! };
+//!
+//! // Create the device (appears as /dev/ublkbN)
+//! let device = manager.create(config).expect("Failed to create device");
+//! println!("Created device: /dev/ublkb{}", device.dev_id);
+//!
+//! // Use the device...
+//! // The device will be automatically cleaned up when manager is dropped
+//! ```
+//!
+//! # Data Patterns
+//!
+//! Three types of data patterns are supported via the [`Bucket`] enum:
+//!
+//! - **Fill**: All zeros (highly compressible)
+//! - **Duplicate**: Repeating 512-byte blocks (deduplicatable)
+//! - **Random**: Deterministic pseudo-random data (incompressible)
+//!
+//! The device is divided into segments, and each segment is randomly assigned
+//! one of these patterns based on the configured percentages.
+//!
+//! # Low-Level API
+//!
+//! For more control, use the [`TestBlockDevice`] API directly:
+//!
+//! ```no_run
+//! use test_bd::{TestBlockDevice, TestBlockDeviceConfig};
+//!
+//! let config = TestBlockDeviceConfig {
+//!     dev_id: -1,
+//!     size: 100 * 1024 * 1024,  // 100 MiB
+//!     seed: 42,
+//!     fill_percent: 50,
+//!     duplicate_percent: 25,
+//!     random_percent: 25,
+//!     segments: 50,
+//!     unprivileged: false,
+//! };
+//!
+//! // This blocks until the device is stopped
+//! TestBlockDevice::run(config).expect("Failed to run device");
+//! ```
+//!
+//! # Segment Information
+//!
+//! You can inspect the segment layout before or after creating a device:
+//!
+//! ```
+//! use test_bd::{TestBlockDeviceConfig, Bucket};
+//!
+//! let config = TestBlockDeviceConfig {
+//!     dev_id: -1,
+//!     size: 10240,
+//!     seed: 42,
+//!     fill_percent: 50,
+//!     duplicate_percent: 25,
+//!     random_percent: 25,
+//!     segments: 10,
+//!     unprivileged: false,
+//! };
+//!
+//! let segments = config.generate_segments();
+//! for (i, segment) in segments.iter().enumerate() {
+//!     println!("Segment {}: {:?} pattern, {} bytes",
+//!              i, segment.pattern, segment.size_bytes());
+//! }
+//! ```
+//!
+//! # Requirements
+//!
+//! - Linux kernel with ublk support (kernel 6.0+)
+//! - Root privileges (unless using unprivileged mode, which requires kernel 6.5+)
+//!
+//! # See Also
+//!
+//! - [`TestBlockDeviceConfig`] - Configuration structure
+//! - [`DeviceManager`] - High-level device management
+//! - [`TestBlockDevice`] - Low-level device API
+//! - [`SegmentInfo`] - Segment layout information
+//! - [`Bucket`] - Data pattern types
+
 use io_uring::IoUring;
 use libublk::ctrl::UblkCtrl;
 use libublk::ctrl_async::UblkCtrlAsync;
@@ -22,43 +141,176 @@ use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 
+/// Information about a contiguous segment of the block device with a specific data pattern.
+///
+/// A test block device is divided into multiple segments, where each segment uses a
+/// different data pattern type (Fill, Duplicate, or Random). This struct describes
+/// a single segment's location and pattern type.
+///
+/// # Examples
+///
+/// ```
+/// use test_bd::{SegmentInfo, IndexPos, Bucket};
+///
+/// let segment = SegmentInfo {
+///     start: IndexPos::new(0),
+///     end: IndexPos::new(1024),
+///     pattern: Bucket::Fill,
+/// };
+///
+/// assert_eq!(segment.count(), 1024);
+/// assert_eq!(segment.size_bytes(), 8192);  // 1024 * 8 bytes
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SegmentInfo {
+    /// Starting position of this segment (inclusive).
     pub start: IndexPos,
+
+    /// Ending position of this segment (exclusive).
     pub end: IndexPos,
+
+    /// The data pattern type used in this segment.
     pub pattern: Bucket,
 }
 
 impl SegmentInfo {
+    /// Returns the number of 8-byte elements in this segment.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use test_bd::{SegmentInfo, IndexPos, Bucket};
+    ///
+    /// let segment = SegmentInfo {
+    ///     start: IndexPos::new(0),
+    ///     end: IndexPos::new(100),
+    ///     pattern: Bucket::Random,
+    /// };
+    ///
+    /// assert_eq!(segment.count(), 100);
+    /// ```
     pub fn count(&self) -> u64 {
         self.end.as_u64() - self.start.as_u64()
     }
 
+    /// Returns the size of this segment in bytes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use test_bd::{SegmentInfo, IndexPos, Bucket};
+    ///
+    /// let segment = SegmentInfo {
+    ///     start: IndexPos::new(0),
+    ///     end: IndexPos::new(100),
+    ///     pattern: Bucket::Random,
+    /// };
+    ///
+    /// assert_eq!(segment.size_bytes(), 800);  // 100 * 8 bytes
+    /// ```
     pub fn size_bytes(&self) -> u64 {
         (self.end.as_u64() - self.start.as_u64()) * 8
     }
 }
 
+/// Configuration for creating a test block device.
+///
+/// This struct contains all the parameters needed to create a procedurally generated
+/// test block device with specific characteristics for testing storage systems, compression,
+/// deduplication, and other block-level operations.
+///
+/// # Examples
+///
+/// ```no_run
+/// use test_bd::TestBlockDeviceConfig;
+///
+/// let config = TestBlockDeviceConfig {
+///     dev_id: -1,  // Auto-assign device ID
+///     size: 1024 * 1024 * 1024,  // 1 GiB
+///     seed: 42,
+///     fill_percent: 40,
+///     duplicate_percent: 30,
+///     random_percent: 30,
+///     segments: 100,
+///     unprivileged: false,
+/// };
+///
+/// // Validate the configuration
+/// config.validate().expect("Invalid configuration");
+/// ```
 #[derive(Debug, Clone)]
 pub struct TestBlockDeviceConfig {
+    /// Device ID for the block device.
+    ///
+    /// Use `-1` to automatically assign the next available device ID,
+    /// or specify a non-negative value to request a specific device ID.
     pub dev_id: i32,
 
+    /// Total size of the block device in bytes.
+    ///
+    /// Must be a multiple of 8 bytes and not exceed `i64::MAX`.
     pub size: u64,
 
+    /// Seed for the pseudo-random number generator.
+    ///
+    /// Using the same seed with the same configuration will produce
+    /// identical data patterns, enabling reproducible tests.
     pub seed: u64,
 
+    /// Percentage of the device to fill with zeros (0-100).
+    ///
+    /// Fill segments are useful for testing compression.
     pub fill_percent: u32,
 
+    /// Percentage of the device to fill with duplicate patterns (0-100).
+    ///
+    /// Duplicate segments contain repeating 512-byte blocks, useful for
+    /// testing deduplication.
     pub duplicate_percent: u32,
 
+    /// Percentage of the device to fill with pseudo-random data (0-100).
+    ///
+    /// Random segments simulate encrypted or already-compressed data.
     pub random_percent: u32,
 
+    /// Number of segments to divide the device into.
+    ///
+    /// Must be less than `size / 512`. More segments create more varied
+    /// data distributions but may impact performance.
     pub segments: usize,
 
+    /// Whether to create an unprivileged device (non-root access).
+    ///
+    /// When `true`, the device can be accessed by non-root users
+    /// (requires kernel support).
     pub unprivileged: bool,
 }
 
 impl TestBlockDeviceConfig {
+    /// Generates the segment layout for this configuration without creating a device.
+    ///
+    /// This is useful for inspecting what the device layout would be before
+    /// actually creating the device, or for verification purposes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use test_bd::TestBlockDeviceConfig;
+    ///
+    /// let config = TestBlockDeviceConfig {
+    ///     dev_id: -1,
+    ///     size: 10240,
+    ///     seed: 42,
+    ///     fill_percent: 50,
+    ///     duplicate_percent: 25,
+    ///     random_percent: 25,
+    ///     segments: 10,
+    ///     unprivileged: false,
+    /// };
+    ///
+    /// let segments = config.generate_segments();
+    /// assert_eq!(segments.len(), 10);
+    /// ```
     pub fn generate_segments(&self) -> Vec<SegmentInfo> {
         let percents = self.percent_pattern();
         let (_, mapping) =
@@ -74,6 +326,36 @@ impl TestBlockDeviceConfig {
             .collect()
     }
 
+    /// Validates the configuration parameters.
+    ///
+    /// Ensures that:
+    /// - Percentages sum to exactly 100
+    /// - Size doesn't exceed `i64::MAX`
+    /// - Number of segments is reasonable for the device size
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(())` if the configuration is valid
+    /// - `Err(String)` with a descriptive error message if validation fails
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use test_bd::TestBlockDeviceConfig;
+    ///
+    /// let config = TestBlockDeviceConfig {
+    ///     dev_id: -1,
+    ///     size: 10240,
+    ///     seed: 42,
+    ///     fill_percent: 50,
+    ///     duplicate_percent: 30,
+    ///     random_percent: 20,
+    ///     segments: 10,
+    ///     unprivileged: false,
+    /// };
+    ///
+    /// assert!(config.validate().is_ok());
+    /// ```
     pub fn validate(&self) -> Result<(), String> {
         if self.fill_percent + self.duplicate_percent + self.random_percent != 100 {
             return Err(format!(
@@ -518,13 +800,110 @@ where
     Ok(actual_dev_id as i32)
 }
 
+/// Main API for creating and managing test block devices.
+///
+/// `TestBlockDevice` provides static methods for creating, deleting,
+/// and inspecting ublk-based test block devices with procedurally generated data.
+///
+/// # Examples
+///
+/// ```no_run
+/// use test_bd::{TestBlockDevice, TestBlockDeviceConfig};
+///
+/// let config = TestBlockDeviceConfig {
+///     dev_id: -1,
+///     size: 1024 * 1024 * 1024,  // 1 GiB
+///     seed: 42,
+///     fill_percent: 40,
+///     duplicate_percent: 30,
+///     random_percent: 30,
+///     segments: 100,
+///     unprivileged: false,
+/// };
+///
+/// // This will block until the device is stopped
+/// match TestBlockDevice::run(config) {
+///     Ok(dev_id) => println!("Device created: /dev/ublkb{}", dev_id),
+///     Err(e) => eprintln!("Error: {}", e),
+/// }
+/// ```
 pub struct TestBlockDevice;
 
 impl TestBlockDevice {
+    /// Creates and runs a test block device with the given configuration.
+    ///
+    /// This method blocks until the device is stopped (e.g., via `delete()`).
+    /// The device will appear as `/dev/ublkb{dev_id}` and can be used like
+    /// any other block device.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Configuration specifying device size, data patterns, etc.
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(i32)` - The assigned device ID on success
+    /// - `Err(String)` - Error message if device creation fails
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use test_bd::{TestBlockDevice, TestBlockDeviceConfig};
+    ///
+    /// let config = TestBlockDeviceConfig {
+    ///     dev_id: -1,
+    ///     size: 10 * 1024 * 1024,  // 10 MiB
+    ///     seed: 42,
+    ///     fill_percent: 50,
+    ///     duplicate_percent: 25,
+    ///     random_percent: 25,
+    ///     segments: 20,
+    ///     unprivileged: false,
+    /// };
+    ///
+    /// let dev_id = TestBlockDevice::run(config).expect("Failed to create device");
+    /// println!("Created device: /dev/ublkb{}", dev_id);
+    /// ```
     pub fn run(config: TestBlockDeviceConfig) -> Result<i32, String> {
         Self::run_with_callback(config, None::<fn(i32, Vec<SegmentInfo>)>)
     }
 
+    /// Creates and runs a test block device with a callback when ready.
+    ///
+    /// Similar to `run()`, but invokes a callback function once the device
+    /// is ready for I/O operations. This is useful for coordinating with
+    /// other tasks that need to wait for device initialization.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Configuration specifying device size, data patterns, etc.
+    /// * `on_ready` - Optional callback invoked with device ID and segment info
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(i32)` - The assigned device ID on success
+    /// - `Err(String)` - Error message if device creation fails
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use test_bd::{TestBlockDevice, TestBlockDeviceConfig};
+    ///
+    /// let config = TestBlockDeviceConfig {
+    ///     dev_id: -1,
+    ///     size: 10 * 1024 * 1024,
+    ///     seed: 42,
+    ///     fill_percent: 50,
+    ///     duplicate_percent: 25,
+    ///     random_percent: 25,
+    ///     segments: 20,
+    ///     unprivileged: false,
+    /// };
+    ///
+    /// TestBlockDevice::run_with_callback(config, Some(|dev_id, segments| {
+    ///     println!("Device {} ready with {} segments", dev_id, segments.len());
+    /// })).expect("Failed to create device");
+    /// ```
     pub fn run_with_callback<F>(
         config: TestBlockDeviceConfig,
         on_ready: Option<F>,
@@ -567,6 +946,29 @@ impl TestBlockDevice {
         .map_err(|e| format!("Failed to run device: {}", e))
     }
 
+    /// Deletes (stops and removes) a test block device.
+    ///
+    /// This stops the device and removes it from the system. The device node
+    /// `/dev/ublkb{dev_id}` will be removed.
+    ///
+    /// # Arguments
+    ///
+    /// * `dev_id` - The device ID to delete
+    /// * `_async_del` - Reserved for future use (currently ignored)
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(())` on success
+    /// - `Err(String)` if deletion fails
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use test_bd::TestBlockDevice;
+    ///
+    /// // Delete device 0
+    /// TestBlockDevice::delete(0, false).expect("Failed to delete device");
+    /// ```
     pub fn delete(dev_id: i32, _async_del: bool) -> Result<(), String> {
         log::debug!(
             "TestBlockDevice::delete ENTRY: dev_id={}, async={}",
@@ -622,6 +1024,26 @@ impl TestBlockDevice {
         Ok(())
     }
 
+    /// Dumps information about a test block device to the log.
+    ///
+    /// This is primarily useful for debugging and displays internal device state.
+    ///
+    /// # Arguments
+    ///
+    /// * `dev_id` - The device ID to inspect
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(())` on success
+    /// - `Err(String)` if the device cannot be opened
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use test_bd::TestBlockDevice;
+    ///
+    /// TestBlockDevice::dump(0).expect("Failed to dump device info");
+    /// ```
     pub fn dump(dev_id: i32) -> Result<(), String> {
         let ctrl = UblkCtrl::new_simple(dev_id)
             .map_err(|e| format!("Failed to open device {}: {}", dev_id, e))?;
@@ -630,13 +1052,94 @@ impl TestBlockDevice {
     }
 }
 
+/// A handle to a managed test block device.
+///
+/// This struct is returned by `DeviceManager::create()` and contains
+/// information about a running device including its ID, configuration,
+/// and segment layout.
+///
+/// # Examples
+///
+/// ```no_run
+/// use test_bd::{DeviceManager, TestBlockDeviceConfig};
+///
+/// let mut manager = DeviceManager::new();
+/// let config = TestBlockDeviceConfig {
+///     dev_id: -1,
+///     size: 10 * 1024 * 1024,
+///     seed: 42,
+///     fill_percent: 50,
+///     duplicate_percent: 25,
+///     random_percent: 25,
+///     segments: 20,
+///     unprivileged: false,
+/// };
+///
+/// let device = manager.create(config).expect("Failed to create device");
+/// println!("Created device {} with {} segments", device.dev_id, device.segments.len());
+/// ```
 #[derive(Debug, Clone)]
 pub struct ManagedDevice {
+    /// The assigned device ID.
     pub dev_id: i32,
+
+    /// The configuration used to create this device.
     pub config: TestBlockDeviceConfig,
+
+    /// Information about each segment in the device.
     pub segments: Vec<SegmentInfo>,
 }
 
+/// Manager for multiple test block devices.
+///
+/// `DeviceManager` provides a higher-level API for managing multiple test block
+/// devices. It handles device creation in background threads and automatic cleanup
+/// on drop. This is the recommended way to create devices when you need to manage
+/// their lifecycle.
+///
+/// # Examples
+///
+/// ```no_run
+/// use test_bd::{DeviceManager, TestBlockDeviceConfig};
+///
+/// let mut manager = DeviceManager::new();
+///
+/// // Create first device
+/// let config1 = TestBlockDeviceConfig {
+///     dev_id: -1,
+///     size: 10 * 1024 * 1024,
+///     seed: 42,
+///     fill_percent: 50,
+///     duplicate_percent: 25,
+///     random_percent: 25,
+///     segments: 20,
+///     unprivileged: false,
+/// };
+/// let device1 = manager.create(config1).expect("Failed to create device 1");
+///
+/// // Create second device
+/// let config2 = TestBlockDeviceConfig {
+///     dev_id: -1,
+///     size: 20 * 1024 * 1024,
+///     seed: 123,
+///     fill_percent: 33,
+///     duplicate_percent: 33,
+///     random_percent: 34,
+///     segments: 50,
+///     unprivileged: false,
+/// };
+/// let device2 = manager.create(config2).expect("Failed to create device 2");
+///
+/// // List all managed devices
+/// for device in manager.list() {
+///     println!("Device {}: {} bytes", device.dev_id, device.config.size);
+/// }
+///
+/// // Delete a specific device
+/// manager.delete(device1.dev_id).expect("Failed to delete device");
+///
+/// // All remaining devices are automatically deleted when manager is dropped
+/// ```
 pub struct DeviceManager {
     devices: HashMap<i32, (JoinHandle<Result<i32, String>>, ManagedDevice)>,
 }
@@ -644,12 +1147,56 @@ pub struct DeviceManager {
 type SegInfo = (i32, Vec<SegmentInfo>);
 
 impl DeviceManager {
+    /// Creates a new `DeviceManager`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use test_bd::DeviceManager;
+    ///
+    /// let manager = DeviceManager::new();
+    /// ```
     pub fn new() -> Self {
         Self {
             devices: HashMap::new(),
         }
     }
 
+    /// Creates a new test block device and manages it.
+    ///
+    /// The device is created in a background thread and this method blocks until
+    /// the device is ready for I/O. The device will continue running in the
+    /// background until explicitly deleted or the manager is dropped.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Configuration for the device
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(ManagedDevice)` - Handle to the created device
+    /// - `Err(String)` - Error message if creation fails
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use test_bd::{DeviceManager, TestBlockDeviceConfig};
+    ///
+    /// let mut manager = DeviceManager::new();
+    /// let config = TestBlockDeviceConfig {
+    ///     dev_id: -1,
+    ///     size: 10 * 1024 * 1024,
+    ///     seed: 42,
+    ///     fill_percent: 50,
+    ///     duplicate_percent: 25,
+    ///     random_percent: 25,
+    ///     segments: 20,
+    ///     unprivileged: false,
+    /// };
+    ///
+    /// let device = manager.create(config).expect("Failed to create device");
+    /// println!("Created /dev/ublkb{}", device.dev_id);
+    /// ```
     pub fn create(&mut self, config: TestBlockDeviceConfig) -> Result<ManagedDevice, String> {
         // Validate configuration first
         config.validate()?;
@@ -764,6 +1311,31 @@ impl DeviceManager {
         Ok(managed_device)
     }
 
+    /// Returns a list of all currently managed devices.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use test_bd::{DeviceManager, TestBlockDeviceConfig};
+    ///
+    /// let mut manager = DeviceManager::new();
+    /// let config = TestBlockDeviceConfig {
+    ///     dev_id: -1,
+    ///     size: 10 * 1024 * 1024,
+    ///     seed: 42,
+    ///     fill_percent: 50,
+    ///     duplicate_percent: 25,
+    ///     random_percent: 25,
+    ///     segments: 20,
+    ///     unprivileged: false,
+    /// };
+    ///
+    /// manager.create(config).expect("Failed to create device");
+    ///
+    /// for device in manager.list() {
+    ///     println!("Device {}: {} segments", device.dev_id, device.segments.len());
+    /// }
+    /// ```
     pub fn list(&self) -> Vec<ManagedDevice> {
         self.devices
             .values()
@@ -771,6 +1343,40 @@ impl DeviceManager {
             .collect()
     }
 
+    /// Deletes a specific managed device.
+    ///
+    /// This stops and removes the device, then waits for the background thread
+    /// to complete. The device is removed from the manager's tracking.
+    ///
+    /// # Arguments
+    ///
+    /// * `dev_id` - The device ID to delete
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(i32)` - The device ID that was deleted
+    /// - `Err(String)` - Error message if deletion fails
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use test_bd::{DeviceManager, TestBlockDeviceConfig};
+    ///
+    /// let mut manager = DeviceManager::new();
+    /// let config = TestBlockDeviceConfig {
+    ///     dev_id: -1,
+    ///     size: 10 * 1024 * 1024,
+    ///     seed: 42,
+    ///     fill_percent: 50,
+    ///     duplicate_percent: 25,
+    ///     random_percent: 25,
+    ///     segments: 20,
+    ///     unprivileged: false,
+    /// };
+    ///
+    /// let device = manager.create(config).expect("Failed to create device");
+    /// manager.delete(device.dev_id).expect("Failed to delete device");
+    /// ```
     pub fn delete(&mut self, dev_id: i32) -> Result<i32, String> {
         log::debug!("DeviceManager::delete called for device {}", dev_id);
 
@@ -805,6 +1411,42 @@ impl DeviceManager {
         })?
     }
 
+    /// Deletes all managed devices.
+    ///
+    /// This stops and removes all devices being managed. Devices are deleted
+    /// sequentially. If any deletion fails, the method continues attempting to
+    /// delete remaining devices and returns an error at the end.
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(())` if all devices were deleted successfully
+    /// - `Err(String)` if any deletions failed (with details about the first failure)
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use test_bd::{DeviceManager, TestBlockDeviceConfig};
+    ///
+    /// let mut manager = DeviceManager::new();
+    ///
+    /// // Create multiple devices
+    /// for i in 0..3 {
+    ///     let config = TestBlockDeviceConfig {
+    ///         dev_id: -1,
+    ///         size: 10 * 1024 * 1024,
+    ///         seed: i,
+    ///         fill_percent: 50,
+    ///         duplicate_percent: 25,
+    ///         random_percent: 25,
+    ///         segments: 20,
+    ///         unprivileged: false,
+    ///     };
+    ///     manager.create(config).expect("Failed to create device");
+    /// }
+    ///
+    /// // Delete all devices
+    /// manager.delete_all().expect("Failed to delete all devices");
+    /// ```
     pub fn delete_all(&mut self) -> Result<(), String> {
         let dev_ids: Vec<i32> = self.devices.keys().copied().collect();
         log::info!(

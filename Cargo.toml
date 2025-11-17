@@ -19,10 +19,12 @@ path = "src/lib.rs"
 [[bin]]
 name = "test-bd"
 path = "src/bin/test-bd.rs"
+doc = false
 
 [[bin]]
 name = "test-bd-verify"
 path = "src/bin/test-bd-verify.rs"
+doc = false
 
 [dependencies]
 # Core library dependencies
