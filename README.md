@@ -1,3 +1,7 @@
+<img width="925" height="512" alt="test-bd" src="https://github.com/user-attachments/assets/6aafb4e8-133a-4a08-b962-c853af9bc4c9" />
+
+
+
 # test-bd - Test Block Device with Procedural Data Generation
 
 [![Crates.io](https://img.shields.io/crates/v/test-bd.svg)](https://crates.io/crates/test-bd)
@@ -306,4 +310,4 @@ at your option.
 
 ## Acknowledgments
 
-Based on the libublk-rs example ramdisk target.
+Based on the libublk-rs example [ramdisk target](https://github.com/ublk-org/libublk-rs/blob/main/examples/ramdisk.rs)
