@@ -4,6 +4,7 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{Error, ErrorKind};
+use std::os::fd::AsFd;
 use std::time::Duration;
 use test_bd::{SegmentInfo, TestBlockDevice, TestBlockDeviceConfig};
 
@@ -14,7 +15,7 @@ struct DeviceInfo {
     segments: Vec<SegmentInfo>,
 }
 
-fn write_dev_id(dev_id: i32, efd: i32) -> Result<i32, Error> {
+fn write_dev_id(dev_id: i32, efd: &nix::sys::eventfd::EventFd) -> Result<i32, Error> {
     // Can't write 0 to eventfd file, otherwise the read() side may
     // not be waken up
     let id_plus_one = (dev_id as u64) + 1;
@@ -24,7 +25,7 @@ fn write_dev_id(dev_id: i32, efd: i32) -> Result<i32, Error> {
     Ok(0)
 }
 
-fn read_dev_id(efd: i32) -> Result<i32, Error> {
+fn read_dev_id(efd: &nix::sys::eventfd::EventFd) -> Result<i32, Error> {
     let mut buffer = [0; 8];
 
     let bytes_read = nix::unistd::read(efd, &mut buffer)?;
@@ -34,13 +35,16 @@ fn read_dev_id(efd: i32) -> Result<i32, Error> {
     Ok((i64::from_le_bytes(buffer) - 1) as i32)
 }
 
-fn read_dev_id_with_timeout(efd: i32, timeout: Duration) -> Result<i32, Error> {
+fn read_dev_id_with_timeout(
+    efd: &nix::sys::eventfd::EventFd,
+    timeout: Duration,
+) -> Result<i32, Error> {
     use nix::poll::{PollFd, PollFlags};
 
-    let timeout_ms = timeout.as_millis() as i32;
-    let mut poll_fds = [PollFd::new(efd, PollFlags::POLLIN)];
+    let timeout_ms = u16::try_from(timeout.as_millis()).unwrap_or(u16::MAX);
+    let mut poll_fds = [PollFd::new(efd.as_fd(), PollFlags::POLLIN)];
 
-    match nix::poll::poll(&mut poll_fds, timeout_ms) {
+    match nix::poll::poll(&mut poll_fds, Some(timeout_ms)) {
         Ok(n) if n > 0 => {
             // Data is available, read it
             read_dev_id(efd)
@@ -79,8 +83,9 @@ fn run_daemon(config: TestBlockDeviceConfig, json_output: bool) -> Result<(), St
         ));
     }
 
-    let efd = nix::sys::eventfd::eventfd(0, nix::sys::eventfd::EfdFlags::empty())
-        .map_err(|e| format!("Failed to create eventfd: {}", e))?;
+    let efd =
+        nix::sys::eventfd::EventFd::from_value_and_flags(0, nix::sys::eventfd::EfdFlags::empty())
+            .map_err(|e| format!("Failed to create eventfd: {}", e))?;
 
     let dev_id = config.dev_id;
     let seed = config.seed;
@@ -103,7 +108,7 @@ fn run_daemon(config: TestBlockDeviceConfig, json_output: bool) -> Result<(), St
             // Child process - run the device with callback to notify parent
             let callback = move |actual_dev_id: i32, _segments: Vec<SegmentInfo>| {
                 // Write the device ID back to the parent when device is ready
-                if let Err(e) = write_dev_id(actual_dev_id, efd) {
+                if let Err(e) = write_dev_id(actual_dev_id, &efd) {
                     log::error!("Failed to write dev_id: {}", e);
                     eprintln!("Failed to write dev_id: {}", e);
                 }
@@ -120,7 +125,7 @@ fn run_daemon(config: TestBlockDeviceConfig, json_output: bool) -> Result<(), St
         daemonize::Outcome::Parent(Ok(_)) => {
             // Parent process - wait for device ID with timeout
             let timeout = Duration::from_secs(10); // 10 second timeout
-            match read_dev_id_with_timeout(efd, timeout) {
+            match read_dev_id_with_timeout(&efd, timeout) {
                 Ok(id) => {
                     if json_output {
                         // Output JSON to stdout
@@ -279,8 +284,8 @@ fn main() {
             }
 
             let seed = if seed == 0 {
-                let mut rng = rand::thread_rng();
-                rng.gen_range(1..u64::MAX)
+                let mut rng = rand::rng();
+                rng.random_range(1..u64::MAX)
             } else {
                 seed
             };

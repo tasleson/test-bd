@@ -293,7 +293,7 @@ fn split_range_into_random_subranges_with_buckets(
     let lo = 512 / 8;
     let hi = range_size / 8;
     while split_points.len() < num_buckets - 1 {
-        let point = IndexPos::new(rng.gen_range(lo..hi));
+        let point = IndexPos::new(rng.random_range(lo..hi));
         split_points.insert(point);
     }
 
