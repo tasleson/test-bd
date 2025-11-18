@@ -187,6 +187,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    #[command(about = "Adds a block device")]
     Add {
         #[arg(long, default_value = "0")]
         id: i32,
@@ -216,6 +217,7 @@ enum Commands {
         json: bool,
     },
 
+    #[command(about = "Deletes a block device")]
     Del {
         #[arg(long, default_value = "0")]
         id: i32,
