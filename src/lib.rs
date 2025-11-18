@@ -123,7 +123,6 @@ use libublk::ctrl_async::UblkCtrlAsync;
 use libublk::helpers::IoBuf;
 use libublk::io::{UblkDev, UblkQueue};
 use libublk::uring_async::{run_uring_tasks, ublk_reap_events_with_handler, ublk_wake_task};
-use libublk::UblkErrorExt;
 use libublk::{BufDesc, UblkError, UblkFlags};
 use std::fs::File;
 use std::os::fd::{AsRawFd, FromRawFd};
@@ -616,8 +615,7 @@ where
                 .setup_cqsize(128)
                 .setup_coop_taskrun()
                 .build(128)
-                .map_err(UblkError::IOError)
-                .with_context(|| String::from("IoUring::builder error"))?;
+                .map_err(UblkError::IOError)?;
             *ring_opt = Some(ring);
         }
         Ok(())
@@ -887,7 +885,7 @@ impl TestBlockDevice {
     /// # Examples
     ///
     /// ```no_run
-    /// use test_bd::{TestBlockDevice, TestBlockDeviceConfig};
+    /// use test_bd::{TestBlockDevice, TestBlockDeviceConfig, SegmentInfo};
     ///
     /// let config = TestBlockDeviceConfig {
     ///     dev_id: -1,
@@ -900,7 +898,7 @@ impl TestBlockDevice {
     ///     unprivileged: false,
     /// };
     ///
-    /// TestBlockDevice::run_with_callback(config, Some(|dev_id, segments| {
+    /// TestBlockDevice::run_with_callback(config, Some(|dev_id, segments: Vec<SegmentInfo>| {
     ///     println!("Device {} ready with {} segments", dev_id, segments.len());
     /// })).expect("Failed to create device");
     /// ```

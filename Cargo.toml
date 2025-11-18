@@ -29,9 +29,9 @@ doc = false
 [dependencies]
 # Core library dependencies
 num = "0.4.3"
-#libublk = "0.4"
+libublk = "0.4"
 # For local development, uncomment the line below and comment the line above:
-libublk = { path = "../libublk-rs/"}
+# libublk = { path = "../libublk-rs/"}
 libc = "0.2"
 smol = "2"
 log = "0.4"
