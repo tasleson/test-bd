@@ -1,6 +1,6 @@
 [package]
 name = "test-bd"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Tony Asleson <tasleson@redhat.com>"]
 description = "A library and CLI tool for creating procedurally generated test block devices using ublk"
