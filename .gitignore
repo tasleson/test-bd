@@ -5,4 +5,5 @@ Cargo.lock
 *.swo
 *~
 .DS_Store
+rust-test-bd.spec
 
