@@ -1,0 +1,14 @@
+# rust2rpm.toml
+
+[package]
+# Override fields in the generated RPM .spec file
+summary = "Library and CLI tool for creating RO test block devices"
+
+[requires]
+bin = ["ublknonroot >= 1.0"]
+build = ["clang-devel"]
+
+[tests]
+comments = ["We can't run tests without ublk_drv loaded and a number of other things"]
+run = ["none"]
+
