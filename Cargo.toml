@@ -35,7 +35,7 @@ libublk = "0.4"
 libc = "0.2"
 smol = "2"
 log = "0.4"
-io-uring = "0.7"
+io-uring = { version = "0.7.12", features = ["bindgen"] }
 futures = "0.3"
 rand_pcg = "0.9"
 
