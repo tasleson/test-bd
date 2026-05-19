@@ -39,7 +39,7 @@ crate: $(CRATEFILE)
 # rust2rpm reads the crate file, so spec depends on crate
 # ------------------------------------------------------------
 $(SPECFILE): $(CRATEFILE)
-	rust2rpm -t fedora -s -V auto test-bd
+	rust2rpm -t fedora -s -V auto -O $(CRATENAME)@$(CRATEVER)
 
 spec: $(SPECFILE)
 
